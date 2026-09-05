@@ -29,14 +29,9 @@ pub fn entry_filename_id_title(id: &str, title: &str) -> String {
     }
 }
 
-/// 从文件名（不含目录）提取 WikiId；`wiki-` + 16 hex 恰为 21 字节且总在开头。
+/// 从文件名（不含目录）提取 WikiId；切点落在多字节字符内部时返回 None。
 pub fn id_from_filename(filename: &str) -> Option<WikiId> {
-    let stem = filename.strip_suffix(".md")?;
-    if stem.len() < WikiId::PREFIX.len() + 16 {
-        return None;
-    }
-    let (candidate, _) = stem.split_at(WikiId::PREFIX.len() + 16);
-    WikiId::parse(candidate)
+    WikiId::split_prefix(filename.strip_suffix(".md")?).map(|(id, _)| id)
 }
 
 #[cfg(test)]
@@ -70,5 +65,6 @@ mod tests {
         );
         assert_eq!(id_from_filename("notes.md"), None);
         assert_eq!(id_from_filename("wiki-91f2.md"), None);
+        assert_eq!(id_from_filename("wiki-91f2c43bf4de40中.md"), None);
     }
 }

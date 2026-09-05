@@ -13,9 +13,11 @@ impl Ops {
         body: &str,
         relations: &[(Predicate, WikiId)],
     ) -> KbResult<()> {
+        let _write = self.0.lock_write()?;
         self.merge_internal(id, body, relations)
     }
 
+    /// 无锁版本：调用方（create）须已持有写锁。
     pub(crate) fn merge_internal(
         &self,
         id: &WikiId,
@@ -81,6 +83,7 @@ impl Ops {
         new_body: &str,
     ) -> KbResult<()> {
         let inner = &self.0;
+        let _write = inner.lock_write()?;
         let mut doc = inner.store.load(id)?;
         let (new_body, _, _) = store::split_relations_section(new_body);
         let old_len = doc.body.chars().count();

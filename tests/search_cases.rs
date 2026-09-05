@@ -18,6 +18,53 @@ fn created(kb: &fluen_kb::Kb, wiki_type: fluen_kb::WikiType, title: &str, body: 
 }
 
 #[test]
+fn stale_index_self_heals_on_query() {
+    let (dir, kb) = temp_kb();
+    let id = created(&kb, Concept, "被外部删除的概念", "独有内容XYZ。");
+
+    // 外部直接删除 md 文件，未经 ops.delete
+    let concepts = dir.path().join("wiki/concepts");
+    let file: std::path::PathBuf = std::fs::read_dir(&concepts)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(id.as_str()))
+        .unwrap();
+    std::fs::remove_file(file).unwrap();
+
+    let hits = kb
+        .search()
+        .query(&QueryParams { query: "被外部删除".into(), ..Default::default() })
+        .unwrap();
+    assert!(hits.is_empty(), "幽灵命中应被过滤");
+
+    let hits = kb
+        .search()
+        .query(&QueryParams {
+            query: "被外部删除".into(),
+            include_content: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(hits.is_empty(), "include_content 时不得整体报错");
+}
+
+#[test]
+fn like_fallback_treats_wildcards_literally() {
+    let (_dir, kb) = temp_kb();
+    created(&kb, Concept, "下划线条目", "包含 a_b 标识符。");
+    created(&kb, Concept, "伪装条目", "包含 axb 标识符。");
+
+    // "a_" 两个字符 → LIKE 回退路径；`_` 不得匹配任意单字符
+    let hits = kb
+        .search()
+        .query(&QueryParams { query: "a_".into(), ..Default::default() })
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].meta.title, "下划线条目");
+}
+
+#[test]
 fn id_direct_lookup_scores_one() {
     let (_dir, kb) = temp_kb();
     let id = created(&kb, Concept, "目标条目", "正文内容。");

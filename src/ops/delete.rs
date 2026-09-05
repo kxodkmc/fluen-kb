@@ -26,39 +26,13 @@ pub struct PruneReport {
 impl Ops {
     pub fn delete(&self, id: &WikiId) -> KbResult<()> {
         let inner = &self.0;
-        let doc = inner.store.load(id)?;
-
-        let mut cleaned = Vec::new();
-        for (other_id, path) in inner.store.discover()? {
-            if other_id == *id {
-                continue;
-            }
-            let mut other = inner.store.load_path(&path)?;
-            if clean_references(&mut other, |t| t == id) > 0 {
-                inner.store.save(&other)?;
-                cleaned.push(other_id);
-            }
-        }
-
-        inner.store.delete_file(id)?;
-        {
-            let conn = inner.lock_conn()?;
-            index::remove_entry_rows(&conn, id)?;
-            for oid in &cleaned {
-                index::reindex_entry(&conn, &inner.store, oid)?;
-            }
-            views::rebuild_index_md(&conn, &inner.store)?;
-        }
-
-        let mut details = Vec::new();
-        if !cleaned.is_empty() {
-            details.push(format!("cleaned references in {} entries", cleaned.len()));
-        }
-        views::append_log(&inner.store, "delete", id.as_str(), &doc.title, &details)
+        let _write = inner.lock_write()?;
+        delete_entry(inner, id)
     }
 
     pub fn delete_source(&self, src: &SourceId) -> KbResult<DeleteSourceReport> {
         let inner = &self.0;
+        let _write = inner.lock_write()?;
         let metas = {
             let conn = inner.lock_conn()?;
             index::metas_by_source(&conn, src)?
@@ -76,7 +50,7 @@ impl Ops {
             if doc.wiki_type == crate::ids::WikiType::Summary
                 && sources.as_slice() == [src.clone()]
             {
-                self.delete(&meta.id)?;
+                delete_entry(inner, &meta.id)?;
                 report.removed.push(meta.id);
                 continue;
             }
@@ -117,6 +91,7 @@ impl Ops {
     /// 悬空引用修复原语：落盘清除，与 lint 构成"检测 → 修复"闭环。
     pub fn prune(&self) -> KbResult<PruneReport> {
         let inner = &self.0;
+        let _write = inner.lock_write()?;
         let files = inner.store.discover()?;
         let existing: HashSet<WikiId> = files.iter().map(|(id, _)| id.clone()).collect();
 
@@ -140,6 +115,39 @@ impl Ops {
     }
 }
 
+/// 删除条目并清理全库对其的引用（调用方须持有写锁）。
+fn delete_entry(inner: &crate::handle::KbInner, id: &WikiId) -> KbResult<()> {
+    let doc = inner.store.load(id)?;
+
+    let mut cleaned = Vec::new();
+    for (other_id, path) in inner.store.discover()? {
+        if other_id == *id {
+            continue;
+        }
+        let mut other = inner.store.load_path(&path)?;
+        if clean_references(&mut other, |t| t == id) > 0 {
+            inner.store.save(&other)?;
+            cleaned.push(other_id);
+        }
+    }
+
+    inner.store.delete_file(id)?;
+    {
+        let conn = inner.lock_conn()?;
+        index::remove_entry_rows(&conn, id)?;
+        for oid in &cleaned {
+            index::reindex_entry(&conn, &inner.store, oid)?;
+        }
+        views::rebuild_index_md(&conn, &inner.store)?;
+    }
+
+    let mut details = Vec::new();
+    if !cleaned.is_empty() {
+        details.push(format!("cleaned references in {} entries", cleaned.len()));
+    }
+    views::append_log(&inner.store, "delete", id.as_str(), &doc.title, &details)
+}
+
 /// 清除指向 `matches` 目标的引用：关联区整行删；正文 `[[…]]` 只摘链接
 /// token、保留标题提示文本与所在句子（D24）。返回清除数。
 pub(crate) fn clean_references(doc: &mut EntryDocument, matches: impl Fn(&WikiId) -> bool) -> usize {
@@ -158,7 +166,10 @@ pub(crate) fn clean_references(doc: &mut EntryDocument, matches: impl Fn(&WikiId
 }
 
 /// `[[dir/]]wikiId[-title]]` → title（无提示则删除 token）。
+/// 与 lint 的 body_links 同一识别规则（前缀解析，含标题提示）；
+/// 代码区内的链接是文档示例，不参与清理。
 fn strip_body_links(body: &str, matches: &impl Fn(&WikiId) -> bool, count: &mut usize) -> String {
+    let exempt = syntax::code_regions(body);
     let mut out = String::with_capacity(body.len());
     let mut rest = body;
     while let Some(start) = rest.find("[[") {
@@ -168,16 +179,14 @@ fn strip_body_links(body: &str, matches: &impl Fn(&WikiId) -> bool, count: &mut 
             return out;
         };
         let end = start + rel_end + 2;
-        let inner = &rest[start + 2..end - 2];
-        let target = inner.rsplit('/').next().unwrap_or(inner);
-        let dangling = WikiId::parse(target)
-            .map(|id| matches(&id))
-            .unwrap_or(false);
-        if dangling {
-            *count += 1;
-            out.push_str(target[WikiId::PREFIX.len() + 16..].strip_prefix('-').unwrap_or(""));
-        } else {
-            out.push_str(&rest[start..end]);
+        let offset = body.len() - rest.len() + start;
+        let target = rest[start + 2..end - 2].rsplit('/').next().unwrap_or("");
+        match WikiId::split_prefix(target) {
+            Some((id, hint)) if matches(&id) && !exempt.iter().any(|r| r.contains(&offset)) => {
+                *count += 1;
+                out.push_str(hint.strip_prefix('-').unwrap_or(""));
+            }
+            _ => out.push_str(&rest[start..end]),
         }
         rest = &rest[end..];
     }

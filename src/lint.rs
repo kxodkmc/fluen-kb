@@ -63,6 +63,15 @@ impl Ops {
         };
 
         let mut issues = Vec::new();
+        let mut seen = HashSet::new();
+        for (id, _) in &files {
+            if !seen.insert(id.clone()) {
+                issues.push(LintIssue::error(
+                    id,
+                    "duplicate entry files share this id; remove the stale one",
+                ));
+            }
+        }
         for doc in &docs {
             lint_document(inner, doc, &existing, &titles, &mut issues);
 
@@ -199,15 +208,30 @@ fn body_links(body: &str) -> Vec<(WikiId, Option<String>)> {
         let end = start + rel_end + 2;
         let inner = &rest[start + 2..end - 2];
         let target = inner.rsplit('/').next().unwrap_or(inner);
-        if target.len() >= WikiId::PREFIX.len() + 16
-            && let Some(id) = WikiId::parse(&target[..WikiId::PREFIX.len() + 16])
-        {
-            let hint = target[WikiId::PREFIX.len() + 16..]
-                .strip_prefix('-')
-                .map(str::to_string);
+        if let Some((id, rest)) = WikiId::split_prefix(target) {
+            let hint = rest.strip_prefix('-').map(str::to_string);
             out.push((id, hint));
         }
         rest = &rest[end..];
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_links_multibyte_target_no_panic() {
+        let body = "见 [[wiki-91f2c43bf4de40中]] 与 [[wiki-91f2c43bf4de401e-提示]]";
+        let links = body_links(body);
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0],
+            (
+                WikiId::new("wiki-91f2c43bf4de401e").unwrap(),
+                Some("提示".to_string())
+            )
+        );
+    }
 }

@@ -24,7 +24,7 @@
 
 - **多路检索**：ID/来源精确直查、FTS5 关键词（`bm25`）、语义向量（余弦相似度）、混合检索动态融合，以及沿关系邻域的 BFS 扩展。
 
-- **静态体检与修复**：`lint` 只读检查悬空引用 / 语法不一致 / 索引漂移，`prune` 落盘清除悬空引用，构成"检测 → 修复"闭环。
+- **静态体检与修复**：`lint` 只读检查悬空引用 / 语法不一致 / 索引漂移 / 重复条目文件，`prune` 落盘清除悬空引用（保留标题提示文本、不改写代码区），构成"检测 → 修复"闭环。
 
 - **幂等全量重建**：删除 `index.db` 后 `rebuild()` 可从全部 `.md` 恢复等价的索引与 `index.md`。
 
@@ -150,8 +150,8 @@ fn main() -> fluen_kb::KbResult<()> {
 | ------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `kb.ops()`    | `create / merge / upsert_from_source`          | 创建与重导入；`create` 自动去重（summary 按来源，concept/entity 按标题+类型），命中则转入 merge                |
 | <br />        | `edit`                                         | 三原语：`SearchReplace` / `InsertAfter`（可用 `scope` 限定到某来源）/ `ReplaceSource`；逐项报告成败     |
-| <br />        | `delete / delete_source / prune`               | 删除条目（并清理他处引用）；按来源删除；清除悬空引用                                                         |
-| <br />        | `rename / migrate`                             | 标题变更（原子重命名）；存量格式一次性迁移（幂等）                                                          |
+| <br />        | `delete / delete_source / prune`               | 删除条目（并清理他处引用）；按来源删除；清除悬空引用（保留标题提示，跳过代码区）                     |
+| <br />        | `rename / migrate`                             | 标题变更（原子重命名，title+type 查重与 `create` 一致）；存量格式一次性迁移（幂等）                |
 | <br />        | `lint`                                         | 只读体检，返回 `LintIssue` 列表                                                             |
 | `kb.search()` | `query`                                        | 检索，支持 `Keyword / Semantic / Hybrid`、`expand` 邻域扩展、`wiki_type` 过滤、`include_content` |
 | <br />        | `get_entry / list_entries / entries_by_source` | 元数据读取                                                                              |
@@ -214,7 +214,7 @@ fn main() {
 ## 开发
 
 ```bash
-cargo test             # 全部测试（各 feature 合计 75）
+cargo test             # 全部测试（各 feature 合计 87）
 cargo test --all-features
 cargo run --example demo   # 端到端演示
 ```

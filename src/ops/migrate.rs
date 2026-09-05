@@ -18,6 +18,7 @@ pub struct MigrateReport {
 impl Ops {
     pub fn migrate(&self) -> KbResult<MigrateReport> {
         let inner = &self.0;
+        let _write = inner.lock_write()?;
         let mut report = MigrateReport::default();
 
         for (id, path) in inner.store.discover()? {
@@ -97,21 +98,13 @@ fn author_predicate() -> KbResult<crate::ids::Predicate> {
 
 /// 从旧 authors 值中提取全部 wiki-xxx 标识。
 fn extract_wiki_ids(raw: &str) -> Vec<WikiId> {
-    let bytes = raw.as_bytes();
     let mut out = Vec::new();
-    let mut i = 0;
-    while i + WikiId::PREFIX.len() + 16 <= bytes.len() {
-        if raw[i..].starts_with(WikiId::PREFIX) {
-            let end = i + WikiId::PREFIX.len() + 16;
-            if let Some(id) = WikiId::parse(&raw[i..end]) {
-                if !out.contains(&id) {
-                    out.push(id);
-                }
-                i = end;
-                continue;
-            }
+    for (i, _) in raw.match_indices(WikiId::PREFIX) {
+        if let Some((id, _)) = WikiId::split_prefix(&raw[i..])
+            && !out.contains(&id)
+        {
+            out.push(id);
         }
-        i += 1;
     }
     out
 }
@@ -139,5 +132,11 @@ mod tests {
         let ids = extract_wiki_ids(raw);
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&WikiId::new("wiki-3d09a8bb72c14e5f").unwrap()));
+    }
+
+    #[test]
+    fn wiki_id_extraction_multibyte_separators_no_panic() {
+        let ids = extract_wiki_ids("wiki-91f2c43bf4de401e、wiki-3d09a8bb72c14e5f");
+        assert_eq!(ids.len(), 2);
     }
 }

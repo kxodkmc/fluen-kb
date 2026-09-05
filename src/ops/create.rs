@@ -25,6 +25,7 @@ impl Ops {
         if title.is_empty() {
             return Err(KbError::invalid("title must be non-empty"));
         }
+        let _write = inner.lock_write()?;
 
         // D17：入参 body 中的关联区剥离（关联由 relations 参数显式提供）
         let (mut body, _, _) = store::split_relations_section(body);

@@ -260,7 +260,7 @@ fn attr_tail(b: &[u8], mut i: usize) -> Option<usize> {
 }
 
 /// T4 豁免区：围栏代码块整行 + 行内代码区间。
-fn code_regions(text: &str) -> Vec<Range<usize>> {
+pub(crate) fn code_regions(text: &str) -> Vec<Range<usize>> {
     let mut regions = Vec::new();
     let mut fence: Option<(u8, usize, usize)> = None;
     let mut pos = 0;

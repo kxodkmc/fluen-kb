@@ -23,6 +23,7 @@ pub(crate) fn reindex_entry(conn: &Connection, store: &Store, id: &WikiId) -> Kb
 
 /// 全量重建：扫描 wiki/ → 事务重建全部派生表 → 重建 index.md。
 /// embeddings 按 entry_id 存活保留（hash 是否相符由读路径判定）。
+/// 崩溃残留的同 id 双文件不致失败：保留 updated 最新者，lint 会报告冲突。
 pub(crate) fn rebuild(conn: &Connection, store: &Store) -> KbResult<()> {
     let mut docs = Vec::new();
     for (_, path) in store.discover()? {
@@ -30,6 +31,8 @@ pub(crate) fn rebuild(conn: &Connection, store: &Store) -> KbResult<()> {
         let rel = store.rel_path(&path);
         docs.push((doc, rel));
     }
+    docs.sort_by(|a, b| (&a.0.id, &a.0.updated, &a.1).cmp(&(&b.0.id, &b.0.updated, &b.1)));
+    docs.dedup_by(|a, b| a.0.id == b.0.id);
 
     let tx = conn.unchecked_transaction()?;
     let embeddings = load_embeddings(&tx)?;

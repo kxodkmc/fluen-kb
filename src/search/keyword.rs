@@ -71,9 +71,14 @@ fn fts(conn: &Connection, query: &str) -> KbResult<Vec<(WikiId, f64)>> {
 }
 
 fn like_fallback(conn: &Connection, query: &str) -> KbResult<Vec<(WikiId, f64)>> {
-    let pattern = format!("%{query}%");
+    // LIKE 通配符按字面匹配，否则 `%`/`_` 会改写查询语义
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
     let mut stmt = conn.prepare(
-        "SELECT id FROM entries_fts WHERE title LIKE ?1 OR content LIKE ?1",
+        "SELECT id FROM entries_fts WHERE title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\'",
     )?;
     let rows = stmt.query_map(params![pattern], |r| r.get::<_, String>(0))?;
     rows.flatten()

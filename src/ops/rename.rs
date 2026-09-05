@@ -12,10 +12,12 @@ impl Ops {
             return Err(KbError::invalid("title must be non-empty"));
         }
         let inner = &self.0;
+        let _write = inner.lock_write()?;
         let mut doc = inner.store.load(id)?;
         if doc.title == title {
             return Ok(());
         }
+        check_title_unique(inner, &doc.wiki_type, title, id)?;
 
         let old_path = inner.store.find_entry_file(id)?;
         let old_title = doc.title.clone();
@@ -38,4 +40,22 @@ impl Ops {
             &[format!("标题「{old_title}」→「{title}」")],
         )
     }
+}
+
+/// 与 create 的去重规则对齐：title+type 已被其它条目占用时拒绝。
+fn check_title_unique(
+    inner: &crate::handle::KbInner,
+    wiki_type: &crate::ids::WikiType,
+    title: &str,
+    self_id: &WikiId,
+) -> KbResult<()> {
+    let conn = inner.lock_conn()?;
+    if let Some(existing) = crate::index::find_by_title(&conn, *wiki_type, title)?
+        && &existing != self_id
+    {
+        return Err(KbError::invalid(format!(
+            "title {title:?} already used by {existing}"
+        )));
+    }
+    Ok(())
 }

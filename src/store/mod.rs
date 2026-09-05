@@ -124,8 +124,11 @@ impl Store {
         })
     }
 
-    /// 原子写入并返回相对路径。
+    /// 原子写入并返回相对路径。标题含换行会破坏行级 frontmatter 格式，在此收口拦截。
     pub fn save(&self, doc: &EntryDocument) -> KbResult<String> {
+        if doc.title.contains(['\n', '\r']) {
+            return Err(KbError::invalid("title must not contain line breaks"));
+        }
         let fm = frontmatter::Frontmatter {
             title: doc.title.clone(),
             wiki_type: doc.wiki_type,
@@ -214,10 +217,7 @@ pub fn parse_relation_line(raw: &str) -> Option<(Predicate, WikiId)> {
     };
     let inner = link.strip_prefix("[[")?.strip_suffix("]]")?;
     let target = inner.rsplit('/').next()?;
-    if target.len() < WikiId::PREFIX.len() + 16 {
-        return None;
-    }
-    let id = WikiId::parse(&target[..WikiId::PREFIX.len() + 16])?;
+    let (id, _) = WikiId::split_prefix(target)?;
     Some((pred.unwrap_or_else(Predicate::related), id))
 }
 
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn save_load_round_trip_preserves_unknown_keys_and_raw_lines() {
-        let dir = tempfile_dir();
+        let dir = tempfile_dir("roundtrip");
         let store = Store::new(&dir);
         store.init().unwrap();
 
@@ -322,8 +322,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn tempfile_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fluen-kb-store-{}", std::process::id()));
+    #[test]
+    fn relation_line_multibyte_target_no_panic() {
+        assert_eq!(parse_relation_line("- [[wiki-91f2c43bf4de40中]]"), None);
+        assert_eq!(
+            parse_relation_line(&format!("- [[{A}中文提示]]")),
+            Some((Predicate::related(), WikiId::new(A).unwrap()))
+        );
+    }
+
+    #[test]
+    fn save_rejects_title_with_line_break() {
+        let dir = tempfile_dir("reject");
+        let store = Store::new(&dir);
+        store.init().unwrap();
+        let doc = EntryDocument {
+            id: WikiId::new(A).unwrap(),
+            wiki_type: WikiType::Concept,
+            title: "Rust\n内存安全笔记".into(),
+            created: "2026-09-03T12:00:00+00:00".into(),
+            updated: "2026-09-03T12:00:00+00:00".into(),
+            extra: Default::default(),
+            body: "正文".into(),
+            relation_lines: Vec::new(),
+            relations: Vec::new(),
+            had_relations_section: false,
+        };
+        assert!(store.save(&doc).is_err());
+        assert!(store.find_entry_file(&doc.id).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tempfile_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fluen-kb-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

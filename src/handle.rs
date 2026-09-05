@@ -17,6 +17,9 @@ pub(crate) type SourceValidator = Box<dyn Fn(&SourceId) -> bool + Send + Sync>;
 pub(crate) struct KbInner {
     pub(crate) store: Store,
     pub(crate) conn: Mutex<Connection>,
+    /// 全量写锁：串行化 ops 层「查重 → 落盘」序列，保证并发去重不变式。
+    /// 锁序恒为 write_lock → conn，避免与读路径交叉死锁。
+    pub(crate) write_lock: Mutex<()>,
     pub(crate) id_generator: Option<IdGenerator>,
     pub(crate) source_validator: Option<SourceValidator>,
     pub(crate) embedding: Mutex<Option<Arc<dyn crate::embed::KnowledgeEmbedding>>>,
@@ -37,6 +40,12 @@ impl KbInner {
         self.conn
             .lock()
             .map_err(|_| KbError::Cancelled("db lock poisoned".into()))
+    }
+
+    pub(crate) fn lock_write(&self) -> KbResult<std::sync::MutexGuard<'_, ()>> {
+        self.write_lock
+            .lock()
+            .map_err(|_| KbError::Cancelled("write lock poisoned".into()))
     }
 }
 
@@ -83,6 +92,7 @@ impl KbBuilder {
         Ok(Kb(Arc::new(KbInner {
             store,
             conn: Mutex::new(conn),
+            write_lock: Mutex::new(()),
             id_generator: self.id_generator,
             source_validator: self.source_validator,
             embedding: Mutex::new(None),

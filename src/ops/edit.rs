@@ -12,6 +12,7 @@ impl Ops {
     /// 逐项报告成败，成功的项整体提交（D22）。
     pub fn edit(&self, id: &WikiId, ops: Vec<EditOp>) -> KbResult<Vec<KbResult<()>>> {
         let inner = &self.0;
+        let _write = inner.lock_write()?;
         let mut doc = inner.store.load(id)?;
         let original_sources = syntax::collect_sources(&doc.body);
 

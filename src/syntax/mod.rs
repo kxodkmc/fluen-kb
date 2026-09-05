@@ -10,6 +10,7 @@ pub use ops::{
     collect_sources, filter_by_source, normalize, remove_source, replace_source,
 };
 pub use parser::{parse_detailed, strip};
+pub(crate) use parser::code_regions;
 
 use crate::ids::SourceId;
 use std::ops::Range;

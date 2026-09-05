@@ -85,6 +85,21 @@ impl Searcher {
             scored = rank::expand(&conn, scored, params.expand)?;
         }
 
+        // 索引是纯缓存：命中条目的 md 文件已被外部删除时清行并跳过（自愈），
+        // 而非返回幽灵命中或让整个查询报错。
+        let existing: std::collections::HashSet<crate::ids::WikiId> = inner
+            .store
+            .discover()?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        for (id, _) in &scored {
+            if !existing.contains(id) {
+                crate::index::remove_entry_rows(&conn, id)?;
+            }
+        }
+        scored.retain(|(id, _)| existing.contains(id));
+
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(params.top_k());
 

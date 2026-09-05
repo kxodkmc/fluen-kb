@@ -455,3 +455,84 @@ fn operations_are_logged() {
     assert!(log.contains("] rename | "));
     assert!(log.contains("] delete | "));
 }
+
+#[test]
+fn rebuild_survives_duplicate_id_files_and_lint_reports() {
+    let (dir, kb) = temp_kb();
+    let id = created(
+        kb.ops().create(Concept, "旧标题", "正文。", &[], None, &[]).unwrap(),
+    );
+    // 模拟崩溃残留：同 id 再落一份新标题文件
+    std::fs::write(
+        dir.path().join("wiki/concepts").join(format!("{id}-新标题.md")),
+        "---\ntitle: 新标题\ntype: concept\ncreated: 2020-01-01T00:00:00+00:00\nupdated: 2020-01-01T00:00:00+00:00\n---\n\n正文二。\n",
+    )
+    .unwrap();
+
+    kb.index().rebuild().unwrap(); // 不因主键冲突失败
+    let issues = kb.ops().lint().unwrap();
+    assert!(issues
+        .iter()
+        .any(|i| i.message.contains("duplicate entry files")));
+}
+
+#[test]
+fn concurrent_create_same_title_yields_single_entry() {
+    use std::sync::{Arc, Barrier};
+    let (_dir, kb) = temp_kb();
+    let kb = Arc::new(kb);
+    let barrier = Arc::new(Barrier::new(2));
+
+    let handles: Vec<_> = (0..2)
+        .map(|i| {
+            let kb = kb.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                kb.ops()
+                    .create(Concept, "Rust", &format!("线程{i}内容"), &[], None, &[])
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut created_count = 0;
+    for h in handles {
+        match h.join().unwrap() {
+            CreateOutcome::Created(_) => created_count += 1,
+            CreateOutcome::MergedInto(_) => {}
+        }
+    }
+    assert_eq!(created_count, 1, "并发同标题 create 恰好一个 Created，另一个合并");
+}
+
+#[test]
+fn rename_rejects_title_already_used() {
+    let (_dir, kb) = temp_kb();
+    let _a = created(kb.ops().create(Concept, "Rust", "内容A", &[], None, &[]).unwrap());
+    let b = created(kb.ops().create(Concept, "Rust2", "内容B", &[], None, &[]).unwrap());
+
+    let err = kb.ops().rename(&b, "Rust").unwrap_err();
+    assert!(matches!(err, KbError::Invalid(_)));
+    kb.ops().rename(&b, "Rust3").unwrap(); // 不同名不受影响
+}
+
+#[test]
+fn prune_fixes_hinted_dangling_link_and_spares_code_blocks() {
+    let (_dir, kb) = temp_kb();
+    let ghost = wiki("wiki-deadbeefdeadbeef");
+    let body = format!(
+        "参见 [[{ghost}-某页面]]。\n\n```markdown\n示例：- [[{ghost}]]\n```\n"
+    );
+    let id = created(kb.ops().create(Concept, "教程", &body, &[], None, &[]).unwrap());
+
+    let report = kb.ops().prune().unwrap();
+    assert_eq!(report.entries, vec![(id.clone(), 1)], "带标题提示的悬空链接应被清除");
+
+    let doc = kb.search().get_entry(&id).unwrap();
+    assert!(!doc.body.contains(&format!("[[{ghost}-某页面]]")));
+    assert!(doc.body.contains("某页面"), "标题提示文本保留");
+    assert!(
+        doc.body.contains(&format!("[[{ghost}]]")),
+        "代码块内的示例不得改写"
+    );
+}

@@ -60,6 +60,15 @@ hex_id!(
     "16 hex digits"
 );
 
+impl WikiId {
+    /// 从 `target` 开头拆出 id 与剩余部分；长度不足或切点落在多字节字符内部时返回 None。
+    pub fn split_prefix(target: &str) -> Option<(Self, &str)> {
+        let end = Self::PREFIX.len() + 16;
+        let id = Self::parse(target.get(..end)?)?;
+        Some((id, &target[end..]))
+    }
+}
+
 /// 条目类型，固定三类（设计决策 D14）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WikiType {
