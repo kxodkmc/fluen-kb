@@ -255,6 +255,67 @@ pub(crate) fn list_metas(conn: &Connection, wiki_type: Option<WikiType>) -> KbRe
     ids.iter().map(|id| get_meta(conn, id)).collect()
 }
 
+/// 分页列出元数据：ORDER BY id 确定性排序，LIMIT/OFFSET 下推 SQL，
+/// 保证跨页结果与 list_entries 的 id 序一致。
+pub(crate) fn list_metas_page(
+    conn: &Connection,
+    wiki_type: Option<WikiType>,
+    limit: usize,
+    offset: usize,
+) -> KbResult<Vec<EntryMeta>> {
+    let ids = match wiki_type {
+        Some(t) => {
+            let mut stmt = conn
+                .prepare("SELECT id FROM entries WHERE type = ?1 ORDER BY id LIMIT ?2 OFFSET ?3")?;
+            query_ids(&mut stmt, params![t.as_str(), limit, offset])?
+        }
+        None => {
+            let mut stmt =
+                conn.prepare("SELECT id FROM entries ORDER BY id LIMIT ?1 OFFSET ?2")?;
+            query_ids(&mut stmt, params![limit, offset])?
+        }
+    };
+    ids.iter().map(|id| get_meta(conn, id)).collect()
+}
+
+/// 条目总数（分页响应的 total）。
+pub(crate) fn count_entries(conn: &Connection, wiki_type: Option<WikiType>) -> KbResult<usize> {
+    let n: i64 = match wiki_type {
+        Some(t) => conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE type = ?1",
+            params![t.as_str()],
+            |r| r.get(0),
+        )?,
+        None => conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?,
+    };
+    Ok(n.max(0) as usize)
+}
+
+/// 按 updated 倒序取最近条目（RFC3339 字符串序即时间序）。
+pub(crate) fn recent_metas(conn: &Connection, limit: usize) -> KbResult<Vec<EntryMeta>> {
+    let mut stmt =
+        conn.prepare("SELECT id FROM entries ORDER BY updated DESC, id LIMIT ?1")?;
+    let ids = query_ids(&mut stmt, params![limit])?;
+    ids.iter().map(|id| get_meta(conn, id)).collect()
+}
+
+/// 按类型聚合计数（meta overview）。
+pub(crate) fn count_by_type(conn: &Connection) -> KbResult<Vec<(WikiType, usize)>> {
+    let mut stmt = conn.prepare("SELECT type, COUNT(*) FROM entries GROUP BY type")?;
+    let rows = stmt.query_map([], |r| {
+        let t: String = r.get(0)?;
+        let n: i64 = r.get(1)?;
+        Ok((t, n))
+    })?;
+    rows.flatten()
+        .map(|(t, n)| {
+            let wiki_type = WikiType::parse(&t)
+                .ok_or_else(|| KbError::invalid(format!("unknown entry type {t:?}")))?;
+            Ok((wiki_type, n.max(0) as usize))
+        })
+        .collect()
+}
+
 pub(crate) fn metas_by_source(conn: &Connection, src: &SourceId) -> KbResult<Vec<EntryMeta>> {
     let mut stmt = conn.prepare(
         "SELECT e.id FROM entries e JOIN entry_sources s ON s.entry_id = e.id

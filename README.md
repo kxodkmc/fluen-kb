@@ -154,7 +154,7 @@ fn main() -> fluen_kb::KbResult<()> {
 | <br />        | `rename / migrate`                             | 标题变更（原子重命名，title+type 查重与 `create` 一致）；存量格式一次性迁移（幂等）                |
 | <br />        | `lint`                                         | 只读体检，返回 `LintIssue` 列表                                                             |
 | `kb.search()` | `query`                                        | 检索，支持 `Keyword / Semantic / Hybrid`、`expand` 邻域扩展、`wiki_type` 过滤、`include_content` |
-| <br />        | `get_entry / list_entries / entries_by_source` | 元数据读取                                                                              |
+| <br />        | `get_entry / list_entries / entries_by_source` | 元数据读取；另有 `list_entries_page`（分页）、`count_entries / count_by_type / recent_entries`（聚合，避免全量载入） |
 | `kb.index()`  | `reindex_entry / rebuild`                      | 单条目重派生 / 全量重建                                                                      |
 | `kb.embed()`  | `attach / refresh_all`                         | 注入向量提供方并补算向量                                                                       |
 
@@ -164,7 +164,7 @@ fn main() -> fluen_kb::KbResult<()> {
 
 - **邻域扩展**：`expand=1|2` 沿关系双向 BFS，邻居分数 = 父分 × `0.8` 每跳衰减。
 
-- **中文短词兜底**：所有分词 `< 3` 字符时自动退回 `LIKE` 匹配（2 字中文词也能命中）。
+- **分词与中文兜底**：查询按空白切词，逐词 `AND` 匹配；`< 3` 字符的词（如 2 字中文词）无法成 trigram 会被剔除，全部剔除时退回 `LIKE` 匹配（2 字中文词也能命中，中英混合查询不落空）。
 
 - **语义新鲜度**：向量带 `content_hash`；内容变更后旧向量会被读路径自动跳过，无 provider 时 `Semantic/Hybrid` 自动退化为关键词。
 
@@ -207,14 +207,14 @@ fn main() {
 
 - 已运行于 tokio runtime 的宿主请用 async 入口 `fluen_kb::mcp::serve_stdio(kb)`。
 
-- 暴露工具：`knowledge_query` / `knowledge_query_batch` / `knowledge_create_entry` / `knowledge_edit_entry` / `knowledge_get_entry` / `knowledge_list_entries` / `knowledge_meta` / `knowledge_delete_entry` / `knowledge_lint` / `knowledge_prune`。
+- 暴露工具：`knowledge_query` / `knowledge_query_batch` / `knowledge_create_entry` / `knowledge_edit_entry` / `knowledge_get_entry` / `knowledge_list_entries`（分页，`limit`/`offset`，默认每页 100） / `knowledge_meta` / `knowledge_delete_entry` / `knowledge_lint` / `knowledge_prune`。
 
 - 协议要点由 rmcp 保证：无 `initialize` 握手、支持 `server/discover`、结果带 `resultType`、工具列表确定性排序，符合原生规范。
 
 ## 开发
 
 ```bash
-cargo test             # 全部测试（各 feature 合计 87）
+cargo test             # 全部测试（各 feature 合计 93）
 cargo test --all-features
 cargo run --example demo   # 端到端演示
 ```

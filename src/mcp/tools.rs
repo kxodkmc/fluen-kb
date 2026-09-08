@@ -1,4 +1,4 @@
-//! MCP 工具面（设计 §9.4）：十个工具一一映射 SDK 方法。
+//! MCP 工具面（设计 §9.4）：九个工具一一映射 SDK 方法。
 
 use crate::error::{KbError, KbResult};
 use crate::handle::Kb;
@@ -49,9 +49,11 @@ pub fn definitions() -> Vec<Tool> {
                      "src": { "type": "string" }, "scope": { "type": "string" } } } } } })),
         tool("knowledge_get_entry", "Load an entry document (frontmatter, provenance-tagged body, relation section).",
              json!({ "type": "object", "required": ["id"], "properties": { "id": { "type": "string" } } })),
-        tool("knowledge_list_entries", "List indexed entries, optionally filtered by type.",
+        tool("knowledge_list_entries", "List indexed entries (paginated), optionally filtered by type. Returns {total, entries}.",
              json!({ "type": "object", "properties": {
-                 "wiki_type": { "type": "string", "enum": ["summary", "concept", "entity"] } } })),
+                 "wiki_type": { "type": "string", "enum": ["summary", "concept", "entity"] },
+                 "limit": { "type": "integer", "minimum": 1, "description": "page size, default 100" },
+                 "offset": { "type": "integer", "minimum": 0, "description": "page offset, default 0" } } })),
         tool("knowledge_meta", "Library overview (counts by type) or recent entries (latest updated).",
              json!({ "type": "object", "required": ["kind"], "properties": {
                  "kind": { "type": "string", "enum": ["overview", "recent"] } } })),
@@ -191,7 +193,10 @@ fn edit_entry(kb: &Kb, args: &Value) -> ToolResult {
     let results = kb.ops().edit(&id, ops).map_err(kb_error)?;
     Ok(json!(results
         .iter()
-        .map(|r| r.is_ok())
+        .map(|r| match r {
+            Ok(()) => json!({ "success": true }),
+            Err(e) => json!({ "success": false, "error": e.to_string() }),
+        })
         .collect::<Vec<_>>()))
 }
 
@@ -214,28 +219,37 @@ fn get_entry(kb: &Kb, args: &Value) -> ToolResult {
 
 fn list_entries(kb: &Kb, args: &Value) -> ToolResult {
     let wiki_type = opt_enum(args, "wiki_type", WikiType::parse)?;
-    let metas = kb.search().list_entries(wiki_type).map_err(kb_error)?;
-    Ok(json!(metas.iter().map(meta_json).collect::<Vec<_>>()))
+    let limit = opt_usize(args, "limit")?.unwrap_or(100).max(1);
+    let offset = opt_usize(args, "offset")?.unwrap_or(0);
+    let search = kb.search();
+    let total = search.count_entries(wiki_type).map_err(kb_error)?;
+    let metas = search
+        .list_entries_page(wiki_type, limit, offset)
+        .map_err(kb_error)?;
+    Ok(json!({
+        "total": total,
+        "entries": metas.iter().map(meta_json).collect::<Vec<_>>(),
+    }))
 }
 
 fn meta(kb: &Kb, args: &Value) -> ToolResult {
     let kind = str_arg(args, "kind")?;
-    let metas = kb.search().list_entries(None).map_err(kb_error)?;
     match kind.as_str() {
         "overview" => {
-            let count = |t: WikiType| metas.iter().filter(|m| m.wiki_type == t).count();
+            let counts = kb.search().count_by_type().map_err(kb_error)?;
+            let count = |t: WikiType| {
+                counts.iter().find(|(wt, _)| *wt == t).map_or(0, |(_, n)| *n)
+            };
             Ok(json!({
-                "total": metas.len(),
+                "total": counts.iter().map(|(_, n)| n).sum::<usize>(),
                 "summaries": count(WikiType::Summary),
                 "concepts": count(WikiType::Concept),
                 "entities": count(WikiType::Entity),
             }))
         }
         "recent" => {
-            let mut recent: Vec<&EntryMeta> = metas.iter().collect();
-            recent.sort_by(|a, b| b.updated.cmp(&a.updated));
-            recent.truncate(10);
-            Ok(json!(recent.iter().map(|m| meta_json(m)).collect::<Vec<_>>()))
+            let recent = kb.search().recent_entries(10).map_err(kb_error)?;
+            Ok(json!(recent.iter().map(meta_json).collect::<Vec<_>>()))
         }
         other => Err(invalid(format!("unknown meta kind {other:?}"))),
     }
@@ -343,6 +357,16 @@ fn opt_enum<T>(
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(_) => enum_arg(args, key, parse).map(Some),
+    }
+}
+
+fn opt_usize(args: &Value, key: &str) -> Result<Option<usize>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(|n| Some(n as usize))
+            .ok_or_else(|| invalid(format!("`{key}` must be a non-negative integer"))),
     }
 }
 

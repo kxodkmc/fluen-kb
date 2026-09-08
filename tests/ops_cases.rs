@@ -132,6 +132,40 @@ fn delete_source_prunes_by_attribution_and_auto_deletes_empty() {
     assert!(kb.search().get_entry(&id).is_err());
 }
 
+/// 回归：摘空自动删除与 delete() 同路径——其它条目对其的引用须一并清理。
+#[test]
+fn delete_source_auto_delete_cleans_references() {
+    let (_dir, kb) = temp_kb();
+    let s = src("ref-1111111111111111");
+    let victim = created(
+        kb.ops()
+            .create(Concept, "受害者", &format!("<{s}>仅此一句。</{s}>"), &[], None, &[])
+            .unwrap(),
+    );
+    let observer = created(
+        kb.ops()
+            .create(
+                Concept,
+                "观察者",
+                &format!("正文提及 [[concepts/{victim}-受害者]] 结束。"),
+                &[(Predicate::related(), victim.clone())],
+                None,
+                &[],
+            )
+            .unwrap(),
+    );
+
+    let report = kb.ops().delete_source(&s).unwrap();
+    assert!(report.removed.contains(&victim), "摘空条目应自动删除");
+
+    let doc = kb.search().get_entry(&observer).unwrap();
+    assert!(doc.relations.is_empty(), "悬空关系行应被清理");
+    assert!(
+        !doc.body.contains(&victim.to_string()),
+        "悬空正文链接应被清理"
+    );
+}
+
 #[test]
 fn summary_stays_single_source_enforced_at_write() {
     let (_dir, kb) = temp_kb();

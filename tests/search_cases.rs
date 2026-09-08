@@ -64,6 +64,102 @@ fn like_fallback_treats_wildcards_literally() {
     assert_eq!(hits[0].meta.title, "下划线条目");
 }
 
+/// 中英混合查询：<3 字符的 CJK 短词剔除后仍应命中英文内容（报告 §四）。
+#[test]
+fn mixed_language_query_hits_after_dropping_short_cjk() {
+    let (_dir, kb) = temp_kb();
+    created(&kb, Concept, "Transformer", "The dominant sequence transduction models are based on self-attention.");
+    created(&kb, Concept, "无关条目", "完全无关的内容。");
+
+    let hits = kb
+        .search()
+        .query(&QueryParams { query: "self-attention 机制".into(), ..Default::default() })
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].meta.title, "Transformer");
+
+    // 长 CJK 词可成 trigram，参与 AND
+    let hits = kb
+        .search()
+        .query(&QueryParams { query: "注意力机制 attention".into(), ..Default::default() })
+        .unwrap();
+    assert!(hits.is_empty(), "含未出现 CJK 长词的 AND 查询应为空");
+}
+
+/// 多词查询为 AND 语义：全部词出现才命中。
+#[test]
+fn multi_word_query_requires_all_terms() {
+    let (_dir, kb) = temp_kb();
+    created(&kb, Concept, "甲", "包含 alpha 一词。");
+    created(&kb, Concept, "乙", "同时包含 alpha 与 beta 两词。");
+
+    let hits = kb
+        .search()
+        .query(&QueryParams { query: "alpha beta".into(), ..Default::default() })
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].meta.title, "乙");
+}
+
+#[test]
+fn list_entries_page_paginates_in_id_order() {
+    let (_dir, kb) = temp_kb();
+    for i in 0..5 {
+        created(&kb, Concept, &format!("条目{i}"), "正文。");
+    }
+    let search = kb.search();
+
+    let page1 = search.list_entries_page(None, 2, 0).unwrap();
+    let page2 = search.list_entries_page(None, 2, 2).unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(search.count_entries(None).unwrap(), 5);
+    assert_eq!(search.count_entries(Some(Concept)).unwrap(), 5);
+
+    // 跨页无重叠、按 id 升序
+    let all: Vec<_> = page1.iter().chain(page2.iter()).map(|m| m.id.clone()).collect();
+    let mut sorted = all.clone();
+    sorted.sort();
+    assert_eq!(all, sorted);
+    let id_set: std::collections::HashSet<_> = all.iter().collect();
+    assert_eq!(id_set.len(), 4);
+
+    // 越界偏移返回空页
+    assert!(search.list_entries_page(None, 2, 100).unwrap().is_empty());
+}
+
+#[test]
+fn recent_entries_orders_by_updated_desc() {
+    let (_dir, kb) = temp_kb();
+    let first = created(&kb, Concept, "先建", "正文一。");
+    let second = created(&kb, Concept, "后建", "正文二。");
+    // 确保时间戳不同
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    kb.ops().merge(&first, "追加正文。", &[]).unwrap();
+
+    let recent = kb.search().recent_entries(10).unwrap();
+    assert_eq!(recent.len(), 2);
+    assert_eq!(recent[0].id, first, "最近更新者在前");
+    assert_eq!(recent[1].id, second);
+    let limited = kb.search().recent_entries(1).unwrap();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0].id, first);
+}
+
+#[test]
+fn count_by_type_groups_entries() {
+    let (_dir, kb) = temp_kb();
+    created(&kb, Concept, "概念", "正文。");
+    created(&kb, Concept, "另一概念", "正文。");
+    created(&kb, Entity, "实体", "正文。");
+
+    let counts = kb.search().count_by_type().unwrap();
+    let get = |t: fluen_kb::WikiType| counts.iter().find(|(wt, _)| *wt == t).map(|(_, n)| *n);
+    assert_eq!(get(Concept), Some(2));
+    assert_eq!(get(Entity), Some(1));
+    assert_eq!(get(Summary), None);
+}
+
 #[test]
 fn id_direct_lookup_scores_one() {
     let (_dir, kb) = temp_kb();

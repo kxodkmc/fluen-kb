@@ -59,7 +59,6 @@ async fn discover_negotiates_2026_07_28_and_lists_tools() {
     let names: Vec<String> = tools.tools.iter().map(|t| t.name.to_string()).collect();
     for expected in [
         "knowledge_query",
-        "knowledge_query_batch",
         "knowledge_create_entry",
         "knowledge_edit_entry",
         "knowledge_get_entry",
@@ -131,6 +130,67 @@ async fn create_query_lint_delete_end_to_end() {
         .as_str()
         .unwrap()
         .contains("wiki-"));
+}
+
+#[tokio::test]
+async fn list_entries_paginates_and_meta_uses_aggregates() {
+    let (_dir, kb) = temp_kb();
+    let (client, _server) = connect(kb).await;
+
+    for title in ["概念一", "概念二", "概念三"] {
+        let mut args = Map::new();
+        args.insert("type".into(), json!("concept"));
+        args.insert("title".into(), json!(title));
+        args.insert("body".into(), json!("<ref-1111111111111111>正文。</ref-1111111111111111>"));
+        client
+            .call_tool(call("knowledge_create_entry", args))
+            .await
+            .expect("call create");
+    }
+
+    // 第一页：limit=2，返回 {total, entries}
+    let mut args = Map::new();
+    args.insert("limit".into(), json!(2));
+    let res = client
+        .call_tool(call("knowledge_list_entries", args))
+        .await
+        .expect("call list page 1");
+    let page = res.structured_content.expect("structured list");
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["entries"].as_array().unwrap().len(), 2);
+
+    // 第二页：offset=2，仅剩 1 条
+    let mut args = Map::new();
+    args.insert("limit".into(), json!(2));
+    args.insert("offset".into(), json!(2));
+    let res = client
+        .call_tool(call("knowledge_list_entries", args))
+        .await
+        .expect("call list page 2");
+    let page = res.structured_content.expect("structured list");
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+
+    // meta overview：类型计数
+    let mut args = Map::new();
+    args.insert("kind".into(), json!("overview"));
+    let res = client
+        .call_tool(call("knowledge_meta", args))
+        .await
+        .expect("call meta overview");
+    let overview = res.structured_content.expect("structured overview");
+    assert_eq!(overview["total"], 3);
+    assert_eq!(overview["concepts"], 3);
+
+    // meta recent：最近更新
+    let mut args = Map::new();
+    args.insert("kind".into(), json!("recent"));
+    let res = client
+        .call_tool(call("knowledge_meta", args))
+        .await
+        .expect("call meta recent");
+    let recent = res.structured_content.expect("structured recent");
+    assert_eq!(recent.as_array().unwrap().len(), 3);
 }
 
 #[tokio::test]

@@ -39,22 +39,31 @@ pub(crate) fn direct_lookup(conn: &Connection, query: &str) -> KbResult<Vec<(Wik
     }
 }
 
-/// 关键词检索：所有分词 <3 字符 → LIKE 回退（中文 2 字词兜底，D19）；
-/// 否则 FTS5 trigram + bm25 负分归一化到 [0,1]。
+/// 关键词检索：按空白切词，逐词建 FTS 短语以 AND 连接（关键词命中需全部词出现）。
+/// <3 字符的词（含 CJK 二字词）无法成 trigram，剔除；剔除殆尽时 LIKE 回退（D19）。
 pub(crate) fn search(conn: &Connection, query: &str) -> KbResult<Vec<(WikiId, f64)>> {
     let trimmed = query.trim();
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
-    if tokens.iter().all(|t| t.chars().count() < 3) {
+    let fts_tokens: Vec<&str> = tokens
+        .iter()
+        .copied()
+        .filter(|t| t.chars().count() >= 3)
+        .collect();
+    if fts_tokens.is_empty() {
         return like_fallback(conn, trimmed);
     }
-    fts(conn, trimmed)
+    fts(conn, &fts_tokens)
 }
 
-fn fts(conn: &Connection, query: &str) -> KbResult<Vec<(WikiId, f64)>> {
-    let pattern = format!("\"{}\"", query.replace('"', "\"\""));
+fn fts(conn: &Connection, tokens: &[&str]) -> KbResult<Vec<(WikiId, f64)>> {
+    let pattern = tokens
+        .iter()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ");
     let mut stmt = conn.prepare(
         "SELECT id, bm25(entries_fts) FROM entries_fts WHERE entries_fts MATCH ?1",
     )?;

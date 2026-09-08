@@ -27,7 +27,7 @@ impl Ops {
     pub fn delete(&self, id: &WikiId) -> KbResult<()> {
         let inner = &self.0;
         let _write = inner.lock_write()?;
-        delete_entry(inner, id)
+        delete_entry(inner, id, &[])
     }
 
     pub fn delete_source(&self, src: &SourceId) -> KbResult<DeleteSourceReport> {
@@ -50,7 +50,7 @@ impl Ops {
             if doc.wiki_type == crate::ids::WikiType::Summary
                 && sources.as_slice() == [src.clone()]
             {
-                delete_entry(inner, &meta.id)?;
+                delete_entry(inner, &meta.id, &[format!("来源 {src} 的单源 summary")])?;
                 report.removed.push(meta.id);
                 continue;
             }
@@ -59,16 +59,10 @@ impl Ops {
             doc.body = new_body;
             let (plain, _) = syntax::strip(&doc.body);
             if plain.trim().is_empty() && doc.relations.is_empty() {
-                inner.store.delete_file(&doc.id)?;
-                let conn = inner.lock_conn()?;
-                index::remove_entry_rows(&conn, &doc.id)?;
-                views::rebuild_index_md(&conn, &inner.store)?;
-                drop(conn);
-                views::append_log(
-                    &inner.store,
-                    "delete",
-                    doc.id.as_str(),
-                    &doc.title,
+                // 与 delete() 同路径：全库清理对空条目的引用，不留悬空
+                delete_entry(
+                    inner,
+                    &doc.id,
                     &[format!("来源 {src} 移除后条目为空，自动删除")],
                 )?;
                 report.removed.push(doc.id);
@@ -116,7 +110,12 @@ impl Ops {
 }
 
 /// 删除条目并清理全库对其的引用（调用方须持有写锁）。
-fn delete_entry(inner: &crate::handle::KbInner, id: &WikiId) -> KbResult<()> {
+/// `details` 追加进日志，用于标记删除缘由（如「来源移除后为空」）。
+fn delete_entry(
+    inner: &crate::handle::KbInner,
+    id: &WikiId,
+    details: &[String],
+) -> KbResult<()> {
     let doc = inner.store.load(id)?;
 
     let mut cleaned = Vec::new();
@@ -141,11 +140,11 @@ fn delete_entry(inner: &crate::handle::KbInner, id: &WikiId) -> KbResult<()> {
         views::rebuild_index_md(&conn, &inner.store)?;
     }
 
-    let mut details = Vec::new();
+    let mut log_details = details.to_vec();
     if !cleaned.is_empty() {
-        details.push(format!("cleaned references in {} entries", cleaned.len()));
+        log_details.push(format!("cleaned references in {} entries", cleaned.len()));
     }
-    views::append_log(&inner.store, "delete", id.as_str(), &doc.title, &details)
+    views::append_log(&inner.store, "delete", id.as_str(), &doc.title, &log_details)
 }
 
 /// 清除指向 `matches` 目标的引用：关联区整行删；正文 `[[…]]` 只摘链接
